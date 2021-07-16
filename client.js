@@ -1,4 +1,6 @@
 const http = require('http');
+const process = require('process');
+const {fork} = require('child_process');
 
 const monoTime = () => {
     const [secs, nanos] = process.hrtime();
@@ -25,29 +27,24 @@ const makeRequest = async (options) =>
         req.end();
     });
 
-const main = async () => {
+const mainCoordinator = async () => {
     const concurrency = 8;
 
     let requestCount = 0;
     let periodStart = monoTime();
-    const agent = new http.Agent({keepAlive: true});
-    const launchWorker = async () => {
-        while (true) {
-            const responseData = await makeRequest({
-                hostname: '127.0.0.1',
-                port: 8000,
-                path: '/test',
-                method: 'GET',
-                agent
-            });
-            if (responseData !== 'hello world!') {
-                throw new Error(`unexpected response: ${responseData}`);
+    const launchWorker = () => {
+        const child = fork(__filename, [], {
+            env: {
+                ...process.env,
+                IS_WORKER: 'true'
             }
-            ++requestCount;
-        }
+        });
+        child.on('message', childRequestCount => {
+            requestCount += childRequestCount;
+        });
     };
 
-    const workerPromises = Array(concurrency).fill().map(launchWorker);
+    const workerProcesses = Array(concurrency).fill().map(launchWorker);
 
     while (true) {
         await sleep(1);
@@ -57,6 +54,37 @@ const main = async () => {
         const periodLength = now - periodStart;
         periodStart = now;
         console.log(`RPS: ${requestsInPeriod / periodLength}`);
+    }
+};
+
+const mainWorker = async () => {
+    const notifyEvery = 100;
+    const agent = new http.Agent({keepAlive: true});
+    let requestCount = 0;
+    while (true) {
+        const responseData = await makeRequest({
+            hostname: '127.0.0.1',
+            port: 8000,
+            path: '/test',
+            method: 'GET',
+            agent
+        });
+        if (responseData !== 'hello world!') {
+            throw new Error(`unexpected response: ${responseData}`);
+        }
+        ++requestCount;
+        if (requestCount >= notifyEvery) {
+            process.send(requestCount);
+            requestCount = 0;
+        }
+    }
+};
+
+const main = async () => {
+    if (process.env['IS_WORKER']) {
+        await mainWorker();
+    } else {
+        await mainCoordinator();
     }
 };
 
