@@ -1,91 +1,41 @@
+const { stat } = require('fs');
 const http = require('http');
-const process = require('process');
-const {fork} = require('child_process');
+const common = require('./common.js');
 
-const monoTime = () => {
-    const [secs, nanos] = process.hrtime();
-    return secs + nanos / 1000000000;
-};
+const port = 8010;
+const fanout = 1000;
+const targetHost = '127.0.0.1';
+const targetPort = 8000;
+const targetPath = '/test';
 
-const sleep = seconds => new Promise((resolve, reject) => setTimeout(resolve, seconds * 1000));
+const stats = new common.ReqStats();
+const latStats = new common.LatStats();
+const agent = new http.Agent({keepAlive: true, maxFreeSockets: 30000, scheduling: 'fifo'});
 
-const makeRequest = async (options) =>
-    new Promise((resolve, reject) => {
-        const chunks = [];
-        const req = http.request(options, res => {
-            res.on('data', (data) => {
-                chunks.push(data);
-            });
-            res.on('end', () => {
-                const responseData = Buffer.concat(chunks).toString();
-                resolve(responseData);
-            });
-        });
-        req.on('error', err => {
-            reject(err);
-        });
-        req.end();
-    });
-
-const mainCoordinator = async () => {
-    const concurrency = 8;
-
-    let requestCount = 0;
-    let periodStart = monoTime();
-    const launchWorker = () => {
-        const child = fork(__filename, [], {
-            env: {
-                ...process.env,
-                IS_WORKER: 'true'
-            }
-        });
-        child.on('message', childRequestCount => {
-            requestCount += childRequestCount;
-        });
-    };
-
-    const workerProcesses = Array(concurrency).fill().map(launchWorker);
-
-    while (true) {
-        await sleep(1);
-        const requestsInPeriod = requestCount;
-        requestCount = 0;
-        const now = monoTime();
-        const periodLength = now - periodStart;
-        periodStart = now;
-        console.log(`RPS: ${requestsInPeriod / periodLength}`);
-    }
-};
-
-const mainWorker = async () => {
-    const notifyEvery = 100;
-    const agent = new http.Agent({keepAlive: true});
-    let requestCount = 0;
-    while (true) {
-        const responseData = await makeRequest({
-            hostname: '127.0.0.1',
-            port: 8000,
-            path: '/test',
+const server = http.createServer(async (req, res) => {
+    const promises = Array(fanout).fill().map(async () => {
+        const reqStart = common.monoTime();
+        const resp = await common.makeRequest({
+            host: targetHost,
+            port: targetPort,
+            path: targetPath,
             method: 'GET',
             agent
         });
-        if (responseData !== 'hello world!') {
-            throw new Error(`unexpected response: ${responseData}`);
+        const reqEnd = common.monoTime();
+        const latency = reqEnd - reqStart;
+        if (resp !== 'hello world!') {
+            throw new Error(`unexpected response: ${resp}`);
         }
-        ++requestCount;
-        if (requestCount >= notifyEvery) {
-            process.send(requestCount);
-            requestCount = 0;
-        }
-    }
-};
+        stats.tick();
+        latStats.addSample(latency);
+    });
+    await Promise.all(promises);
+    res.end('hello world 2!');
+});
 
-const main = async () => {
-    if (process.env['IS_WORKER']) {
-        await mainWorker();
-    } else {
-        await mainCoordinator();
-    }
-};
+stats.loggerWorker();
+latStats.loggerWorker();
 
-main();
+console.log(`Worker ${process.pid} listening on ${port}...`);
+server.listen(port);
