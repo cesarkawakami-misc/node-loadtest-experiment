@@ -72,14 +72,18 @@ class LatStats {
 
     reset() {
         this.samples = [];
+        this.totalCount = 0;
     }
 
     addSample(sample) {
-        if (this.samples.length >= LAT_SAMPLE_LIMIT) {
-            const index = Math.floor(Math.random() * this.samples.length);
-            this.samples[index] = sample;
-        } else {
-            this.samples.push(sample);
+        ++this.totalCount;
+        const index = Math.floor(Math.random() * this.totalCount);
+        if (index < LAT_SAMPLE_LIMIT) {
+            if (this.samples.length < LAT_SAMPLE_LIMIT) {
+                this.samples.push(sample);
+            } else {
+                this.samples[index] = sample;
+            }
         }
     }
 
